@@ -1,30 +1,24 @@
-import torch
-import argparse
-import numpy as np
+
 import logging
+import numpy as np
 
 from tqdm import tqdm
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.metrics import f1_score, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import f1_score, confusion_matrix
 
+import torch
 from torch.utils.data import DataLoader, RandomSampler
-from torch.optim.lr_scheduler import StepLR
-from torchvision.transforms import Compose, ToTensor, Resize, Normalize, RandomRotation
-from torchvision.transforms import RandomApply, RandomEqualize, ColorJitter, RandomResizedCrop
+from torch.optim import SGD, lr_scheduler
+from torch.nn import CrossEntropyLoss
+from torchvision.transforms import Compose, ToTensor, Resize
 
-from torch.nn import Linear, CrossEntropyLoss
-from torch.optim import SGD
-from torchvision.models import resnet18, resnet50
+from mushroom.dataset import kaggle_mushrooms
+from mushroom.models.resnet18 import Resnet18Classifier
 
-from pipeline.dataset import MushroomDataset, dataset_primer, MushroomImage
-
-import logging
-from typing import List, Tuple
 
 def get_model(device, n_classes, counts):
-    # The classifier is a ResNet18 with a random top layer dim = n_classes
-    classifier = resnet18(pretrained=True)
-    classifier.fc = Linear(classifier.fc.in_features, n_classes)
+    """Return a model, lerarning critetion and optimizer
+    TODO: This should be done by a model manager if multiple models are available"""
+    classifier = Resnet18Classifier(n_classes=n_classes, pretrained=True)
     classifier = classifier.to(device)
     # Invert and normalize counts
     weights = [1 / (count/sum(counts)) * (max(counts)/sum(counts)) for count in counts]
@@ -35,84 +29,50 @@ def get_model(device, n_classes, counts):
     return classifier, criterion, optimizer
 
 
-def representatve_split(items: List[MushroomImage], classnames: List[str],
-                        split: float) -> Tuple[List[int], List[int], List[int], List[int]]:
-    """Split a dataset so that the ratio of classes in the test set equals to the train set.
-    Also returns item counts per classes"""
-
-    # Build a list of lists from the item indices
-    classes = [[] for i in range(len(classnames))]
-    for i, item in enumerate(items):
-        classes[item.class_id].append(i)
-
-    # Shuffle and split each class list
-    train_idx = []
-    train_counts = []
-    test_idx = []
-    test_counts = []
-    for cls in classes:
-        np.random.shuffle(cls)
-        split_idx = int(len(cls) * split)
-        train_idx += cls[:split_idx]
-        train_counts.append(len(cls[:split_idx]))
-        test_idx += cls[split_idx:]
-        test_counts.append(len(cls[split_idx:]))
-
-    # Shuffle again for good measure, in case the dataloader doesn't
-    np.random.shuffle(train_idx)
-    np.random.shuffle(test_idx)
-
-    return train_idx, train_counts, test_idx, test_counts
-
-
 def session_config():
+    """Config file placeholder"""
     torch.backends.cudnn.enabled = True
     torch.manual_seed(0)
     np.set_printoptions(precision=3)
+
+    logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 
     return torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 
 def collate_fn(batch):
-    # Use a custom collate_fn to handle corrupted samples dynamically in the DataLoader
+    """Use a custom collate_fn to handle corrupted samples dynamically in the DataLoader"""
     batch = list(filter(lambda x: x is not None, batch))
     return torch.utils.data.dataloader.default_collate(batch)
 
 
 def train():
     # Load config (model, session)
-    logging.basicConfig(format='%(message)s', level=logging.DEBUG)
     device = session_config()
 
-    # Load the transformations required for inference
-    test_transform = Compose([Resize((300, 300)),
-                              ToTensor()])
+    # Define the basic transformations required for minimal training and inference
+    transform = Compose([Resize((300, 300)),
+                         ToTensor()])
 
-    # Define dataset and transforms to be applied
-    dataset_items, classnames = dataset_primer(path='/home/attila/Datasets/Mushrooms')
+    # Load the Kaggle Mushroom image classification dataset
+    train_set, train_counts, test_set, test_counts = kaggle_mushrooms(path='/home/attila/Datasets/Mushrooms',
+                                                                      transform=transform)
 
-    # Shuffle and split
-    np.random.shuffle(dataset_items)
-    train_idx, train_count, test_idx, test_count = representatve_split(dataset_items, classnames, split=0.8)
-    train_set = MushroomDataset(items=[dataset_items[i] for i in train_idx],
-                                transform=test_transform, classnames=classnames)
-    test_set = MushroomDataset(items=[dataset_items[i] for i in test_idx],
-                               transform=test_transform, classnames=classnames)
+    # Dataset sanity check
     logging.info(f'Train set: {len(train_set)} samples, Test set: {len(test_set)} samples')
-    logging.info(f'Train class counts: {train_count}, Test class counts: {test_count}')
+    logging.info(f'Train class counts: {train_counts}, Test class counts: {test_counts}')
 
     # Load or initialise the model
-    model, criterion, optimizer = get_model(device=device, n_classes=len(train_set.classnames), counts=train_count)
+    model, criterion, optimizer = get_model(device=device, n_classes=len(train_set.classnames), counts=train_counts)
 
     '''
     Train the model
     '''
 
-    # Define a step scheduler to reduce learning rate for fine-tuning
-    scheduler = StepLR(optimizer, step_size=15, gamma=0.1)
+    # Define a step scheduler to reduce learning rate for longer trains
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
 
-    # Define the train data loader with the custom collate function. A small batch size is used, to increase
-    # variation of some random transforms that apply with the same parameters across the whole batch.
+    # Define the train data loader with the custom collate function
     # Set pin_memory=True to speed up data loading to CUDA GPUs
     train_loader = DataLoader(train_set, batch_size=4, collate_fn=collate_fn, pin_memory=True,
                               sampler=RandomSampler(train_set, replacement=False), num_workers=4)
@@ -165,7 +125,7 @@ def train():
             model.train()
 
             # Save checkpoint
-            torch.save(model.state_dict(), f'../model_repository/ckp{epoch:04d}.pt')
+            torch.save(model.state_dict(), f'../model-store/ckp{epoch:04d}.pt')
 
 
 if __name__ == '__main__':

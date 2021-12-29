@@ -1,18 +1,9 @@
 Mushroom classification continuous training, served with Streamlit
 
-
-Level 0:
-
-```
-┌────────────┐     ┌────┐     ┌────────┐      ┌────────┐
-│Data grab   ├────►│Data├────►│ML Model├─────►│Model   │
-│from Twitter│     │Prep│     │Training│      │Artifact│
-└────────────┘     └────┘     └────────┘      └────┬───┘
-                                                   │
-                                                   │
-                                                   │
-                                              ┌────▼────┐
-                                              │Streamlit│
-                                              │serving  │
-                                              └─────────┘
-```
+- [x] Trained model
+- [x] Packaged
+- [x] TorchServe serving
+- [ ] Simple JS front-end on github pages
+- [ ] Tests and GitHub actions
+- [ ] Pipeline deployment
+- [ ] Continuous training with twitter stream
